@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Етажна собственост – Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{font-family:Arial;background:#f5f6fa;margin:0;}
+header{background:#4CAF50;color:white;text-align:center;padding:18px;}
+.container{max-width:1100px;margin:auto;padding:20px;}
+.filters{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;}
+select,button{padding:8px;border-radius:6px;border:1px solid #ccc;}
+button{background:#4CAF50;color:white;border:none;cursor:pointer;}
+.cards{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;}
+.card{flex:1;background:white;padding:15px;border-radius:10px;box-shadow:0 3px 6px rgba(0,0,0,0.1);text-align:center;}
+table{width:100%;border-collapse:collapse;background:white;margin-bottom:25px;}
+th,td{padding:8px;border-bottom:1px solid #ddd;text-align:center;}
+th{background:#4CAF50;color:white;}
+.unpaid{background:#ffd6d6;color:#b30000;font-weight:bold;}
+canvas{background:white;padding:10px;border-radius:10px;margin-bottom:25px;}
+</style>
+</head>
+<body>
+
+<header>
+<h2>Етажна собственост – приходи и разходи</h2>
+</header>
+
+<div class="container">
+
+<div class="filters">
+<select id="year-select"></select>
+<select id="month-select">
+<option>Всички</option>
+<option>Януари</option><option>Февруари</option><option>Март</option>
+<option>Април</option><option>Май</option><option>Юни</option>
+<option>Юли</option><option>Август</option><option>Септември</option>
+<option>Октомври</option><option>Ноември</option><option>Декември</option>
+</select>
+<select id="apartment-select"><option>Всички</option></select>
+<button onclick="thisMonth()">Този месец</button>
+<button onclick="showOnlyUnpaid()">Неплатили</button>
+<button onclick="showAllRows()">Всички</button>
+<button onclick="showOldDebts()">Старите задължения</button>
+</div>
+
+<div class="cards">
+<div class="card"><h3>Приходи Текущи</h3><p id="income-current">0</p></div>
+<div class="card"><h3>Приходи Фонд ремонти</h3><p id="income-repair">0</p></div>
+<div class="card"><h3>Разходи Текущи</h3><p id="expense-current">0</p></div>
+<div class="card"><h3>Разходи Фонд ремонти</h3><p id="expense-repair">0</p></div>
+<div class="card"><h3>Баланс Текущи</h3><p id="balance-current">0</p></div>
+<div class="card"><h3>Баланс Фонд ремонти</h3><p id="balance-repair">0</p></div>
+</div>
+
+<h3>Приходи</h3>
+<table id="income-table">
+<thead>
+<tr>
+<th>Апартамент</th><th>Месец</th><th>Година</th><th>Каса</th><th>Сума за плащане</th><th>Платена сума</th>
+</tr>
+</thead>
+<tbody id="income-body"></tbody>
+</table>
+
+<h3 id="expenses-header">Разходи</h3>
+<table id="expense-table">
+<thead>
+<tr>
+<th>Разход</th><th>Месец</th><th>Година</th><th>Каса</th><th>Сума</th>
+</tr>
+</thead>
+<tbody id="expense-body"></tbody>
+</table>
+
+<h3 id="header-current">Графика Каса Текущи</h3>
+<canvas id="chartCurrent" height="120"></canvas>
+
+<h3 id="header-repair">Графика Фонд Ремонти</h3>
+<canvas id="chartRepair" height="120"></canvas>
+
+<div id="old-debts-container"></div>
+
+</div>
+
+<script>
+const FIXING_RATE = 1.95583;
+let incomeData=[], expenseData=[], chartCurrent, chartRepair;
+const months=["Януари","Февруари","Март","Април","Май","Юни","Юли","Август","Септември","Октомври","Ноември","Декември"];
+
+function toEuro(amount, year){return (parseInt(year)<2026 ? amount/FIXING_RATE : amount);}
+function formatCurrencyOriginal(amount, year){return (parseInt(year)<2026 ? amount.toFixed(2)+" лв" : amount.toFixed(2)+" €");}
+
+async function loadData(){
+  const inc=await fetch("https://opensheet.vercel.app/1UTvtuibsrsP-9_mPTTsNb5MRCh6V6znYrVud5om0Jqc/Приходи").then(r=>r.json());
+  const exp=await fetch("https://opensheet.vercel.app/1UTvtuibsrsP-9_mPTTsNb5MRCh6V6znYrVud5om0Jqc/Разходи").then(r=>r.json());
+  incomeData=inc; expenseData=exp; populateFilters(); updateTables();
+}
+
+function populateFilters(){
+  const years=[...new Set(incomeData.map(d=>d.Година).filter(y=>y && y.trim()!==""))];
+  const yearSelect=document.getElementById("year-select"); yearSelect.innerHTML='<option>Всички</option>';
+  years.forEach(y=>{let o=document.createElement("option"); o.textContent=o.value=y; yearSelect.appendChild(o);});
+  const apts=[...new Set(incomeData.map(d=>d.Апартамент).filter(a=>a && a.trim()!==""))];
+  const aptSelect=document.getElementById("apartment-select"); aptSelect.innerHTML='<option>Всички</option>';
+  apts.forEach(a=>{let o=document.createElement("option"); o.textContent=o.value=a; aptSelect.appendChild(o);});
+}
+
+function updateTables(){
+  document.getElementById("old-debts-container").innerHTML=""; // скриваме старите задължения
+  document.getElementById("income-table").style.display="table";
+  document.getElementById("expense-table").style.display="table";
+  document.getElementById("expenses-header").style.display="block";
+
+  const year=document.getElementById("year-select").value;
+  const month=document.getElementById("month-select").value;
+  const apt=document.getElementById("apartment-select").value;
+
+  let incomeCurrent=0, incomeRepair=0, expenseCurrent=0, expenseRepair=0;
+  const tbodyI=document.getElementById("income-body"), tbodyE=document.getElementById("expense-body");
+  tbodyI.innerHTML=""; tbodyE.innerHTML="";
+
+  const showExpensesAndBalance = !(apt!=="Всички");
+
+  incomeData.forEach(r=>{
+    if(year!=="Всички" && r.Година!=year) return;
+    if(month!=="Всички" && r.Месец!=month) return;
+    if(apt!=="Всички" && r.Апартамент!=apt) return;
+    const due=parseFloat(r["Сума за плащане"])||0;
+    const paid=parseFloat(r["Платена сума"])||0;
+    const yearNum=parseInt(r.Година)||2026;
+    const paidEuro=toEuro(paid, yearNum);
+    if(r.Каса==="Текущи") incomeCurrent+=paidEuro;
+    if(r.Каса==="Фонд ремонти") incomeRepair+=paidEuro;
+    const tr=document.createElement("tr");
+    if(paid<due) tr.classList.add("unpaid");
+    tr.innerHTML=`<td>${r.Апартамент}</td><td>${r.Месец}</td><td>${r.Година}</td><td>${r.Каса}</td><td>${formatCurrencyOriginal(due, yearNum)}</td><td>${formatCurrencyOriginal(paid, yearNum)}</td>`;
+    tbodyI.appendChild(tr);
+  });
+
+  if(showExpensesAndBalance){
+    expenseData.forEach(r=>{
+      if(year!=="Всички" && r.Година!=year) return;
+      if(month!=="Всички" && r.Месец!=month) return;
+      const amt=parseFloat(r.Сума)||0;
+      const yearNum=parseInt(r.Година)||2026;
+      const amtEuro=toEuro(amt, yearNum);
+      if(r.Каса==="Текущи") expenseCurrent+=amtEuro;
+      if(r.Каса==="Фонд ремонти") expenseRepair+=amtEuro;
+      const tr=document.createElement("tr");
+      tr.innerHTML=`<td>${r.Разход}</td><td>${r.Месец}</td><td>${r.Година}</td><td>${r.Каса}</td><td>${formatCurrencyOriginal(amt, yearNum)}</td>`;
+      tbodyE.appendChild(tr);
+    });
+  }
+
+  // Скриваме таблицата за разходи, ако няма редове
+  const expenseTable = document.getElementById("expense-table");
+  const expenseHeader = document.getElementById("expenses-header");
+  if(tbodyE.children.length===0){ expenseTable.style.display="none"; expenseHeader.style.display="none"; }
+  else{ expenseTable.style.display="table"; expenseHeader.style.display="block"; }
+
+  document.getElementById("income-current").textContent=incomeCurrent.toFixed(2)+" €";
+  document.getElementById("income-repair").textContent=incomeRepair.toFixed(2)+" €";
+  document.getElementById("expense-current").textContent=expenseCurrent.toFixed(2)+" €";
+  document.getElementById("expense-repair").textContent=expenseRepair.toFixed(2)+" €";
+  document.getElementById("balance-current").textContent=(incomeCurrent-expenseCurrent).toFixed(2)+" €";
+  document.getElementById("balance-repair").textContent=(incomeRepair-expenseRepair).toFixed(2)+" €";
+
+  updateChart(year,month,apt);
+}
+
+// Графики (както преди)
+function updateChart(year,month,apt){
+  const chartCurrentEl = document.getElementById("chartCurrent");
+  const chartRepairEl = document.getElementById("chartRepair");
+  const headerCurrent = document.getElementById("header-current");
+  const headerRepair = document.getElementById("header-repair");
+
+  chartCurrentEl.style.display="none"; headerCurrent.style.display="none";
+  chartRepairEl.style.display="none"; headerRepair.style.display="none";
+
+  if(year==="Всички" || month!=="Всички" || apt!=="Всички") return;
+
+  let incC=new Array(12).fill(0), expC=new Array(12).fill(0);
+  let incR=new Array(12).fill(0), expR=new Array(12).fill(0);
+
+  incomeData.forEach(r=>{
+    if(r.Година!=year) return;
+    const i=months.indexOf(r.Месец), paid=parseFloat(r["Платена сума"])||0, yearNum=parseInt(r.Година)||2026, paidEuro=toEuro(paid, yearNum);
+    if(r.Каса==="Текущи") incC[i]+=paidEuro;
+    if(r.Каса==="Фонд ремонти") incR[i]+=paidEuro;
+  });
+
+  expenseData.forEach(r=>{
+    if(r.Година!=year) return;
+    const i=months.indexOf(r.Месец), amt=parseFloat(r.Сума)||0, yearNum=parseInt(r.Година)||2026, amtEuro=toEuro(amt, yearNum);
+    if(r.Каса==="Текущи") expC[i]+=amtEuro;
+    if(r.Каса==="Фонд ремонти") expR[i]+=amtEuro;
+  });
+
+  if(parseInt(year)>=2026 && (incC.some(v=>v>0)||expC.some(v=>v>0))){
+    chartCurrentEl.style.display="block"; headerCurrent.style.display="block";
+    if(chartCurrent) chartCurrent.destroy();
+    chartCurrent=new Chart(chartCurrentEl,{type:"bar",data:{labels:months,datasets:[{label:"Приходи",data:incC},{label:"Разходи",data:expC}]}});
+  }
+
+  if(incR.some(v=>v>0)||expR.some(v=>v>0)){
+    chartRepairEl.style.display="block"; headerRepair.style.display="block";
+    if(chartRepair) chartRepair.destroy();
+    chartRepair=new Chart(chartRepairEl,{type:"bar",data:{labels:months,datasets:[{label:"Приходи",data:incR},{label:"Разходи",data:expR}]}});
+  }
+}
+
+// Старите задължения (групирани по апартамент)
+function showOldDebts(){
+  // Скриваме стандартните таблици и заглавие "Приходи"
+  document.getElementById("income-table").style.display = "none";
+  document.getElementById("expense-table").style.display = "none";
+  document.getElementById("expenses-header").style.display = "none";
+
+  const debts = {}; // { апартамент: { total, details[] } }
+
+  incomeData.forEach(r=>{
+    const year = parseInt(r.Година)||2026;
+    const apartment = r.Апартамент;
+    const due = parseFloat(r["Сума за плащане"])||0;
+    const paid = parseFloat(r["Платена сума"])||0;
+    const remaining = due - paid;
+    if(remaining <= 0) return;
+
+    // Конвертираме в евро ако е преди 2026
+    const remainingEuro = year < 2026 ? remaining / 1.95583 : remaining;
+
+    if(!debts[apartment]) debts[apartment] = { total: 0, details: [] };
+    debts[apartment].total += remainingEuro;
+    debts[apartment].details.push({ month: r.Месец, year: r.Година, remaining: remainingEuro });
+  });
+
+  const container = document.getElementById("old-debts-container");
+  container.innerHTML = "<h3>Старите задължения по апартамент</h3><table><thead><tr><th>Апартамент</th><th>Общо (€)</th><th>Разбивка по месеци</th></tr></thead><tbody></tbody></table>";
+  const tbody = container.querySelector("tbody");
+
+  Object.entries(debts).forEach(([apt, data])=>{
+    const tr = document.createElement("tr");
+    const detailsStr = data.details.map(d=>`${d.month} ${d.year}: ${d.remaining.toFixed(2)} €`).join("<br>");
+    tr.innerHTML = `<td>${apt}</td><td>${data.total.toFixed(2)} €</td><td>${detailsStr}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+
+function showOnlyUnpaid(){
+  document.querySelectorAll("#income-body tr").forEach(r=>{if(!r.classList.contains("unpaid")) r.style.display="none";});
+  document.getElementById("expense-body").innerHTML="";
+  document.getElementById("expense-table").style.display="none";
+  document.getElementById("expenses-header").style.display="none";
+}
+
+function showAllRows(){updateTables();}
+function thisMonth(){const d=new Date();document.getElementById("year-select").value=d.getFullYear();document.getElementById("month-select").value=months[d.getMonth()];updateTables();}
+document.querySelectorAll("select").forEach(s=>s.addEventListener("change",updateTables));
+
+loadData();
+</script>
+
+</body>
+</html>
